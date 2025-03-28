@@ -44,12 +44,12 @@ async function addPullRequestComment(
 
 // Get pylint score on python files
 async function getPylintScore(): Promise<number> {
-  const files: string[] = await glob("**/*.py", {
+  const files: string[] = await glob("**/*", {
     ignore: ["venv/**", "env/**", "node_modules/**"],
   });
   console.log(files);
   if (files.length === 0) {
-    console.log("No Python files found in the repository.");
+    console.log("No files found in the repository.");
     return 10;
   }
 
@@ -250,12 +250,18 @@ async function getAIResponse(prompt: string): Promise<Array<{
 
     const content =
       response.content[0].type === "text" ? response.content[0].text : "";
+    
+    // Strip markdown code blocks if present
+    let cleanContent = content;
+    // Remove markdown code block delimiters (```json and ```)
+    cleanContent = cleanContent.replace(/```json\s*/g, '').replace(/```\s*$/g, '');
+    
     let parsedContent;
     try {
-      parsedContent = JSON.parse(content);
+      parsedContent = JSON.parse(cleanContent);
     } catch (jsonError) {
       console.error("Error parsing initial JSON:", jsonError);
-      const cleanedContent = content
+      const cleanedContent = cleanContent
         .replace(/[\u0000-\u001F\u007F-\u009F]/g, "")
         .replace(/\n/g, "\\n")
         .replace(/\r/g, "\\r")
@@ -270,8 +276,22 @@ async function getAIResponse(prompt: string): Promise<Array<{
         parsedContent = JSON.parse(cleanedContent);
       } catch (secondJsonError) {
         console.error("Error parsing cleaned JSON:", secondJsonError);
-        console.error("Cleaned content that failed to parse:", cleanedContent);
-        return null;
+        console.error("Cleaned content that failed to parse:", content);
+        
+        // Try one more approach - extract JSON between code blocks if present
+        try {
+          const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+          if (jsonMatch && jsonMatch[1]) {
+            const extractedJson = jsonMatch[1].trim();
+            parsedContent = JSON.parse(extractedJson);
+            console.log("Successfully parsed JSON extracted from code block");
+          } else {
+            return null;
+          }
+        } catch (thirdJsonError) {
+          console.error("Error parsing extracted JSON:", thirdJsonError);
+          return null;
+        }
       }
     }
 
