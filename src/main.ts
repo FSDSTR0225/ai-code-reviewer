@@ -42,33 +42,6 @@ async function addPullRequestComment(
   });
 }
 
-// Get pylint score on python files
-async function getPylintScore(): Promise<number> {
-  const files: string[] = await glob("**/*", {
-    ignore: ["venv/**", "env/**", "node_modules/**"],
-  });
-  console.log(files);
-  if (files.length === 0) {
-    console.log("No files found in the repository.");
-    return 10;
-  }
-
-  const { stdout, stderr } = await execAsync(
-    `pylint ${files.join(" ")} --exit-zero  --output-format=text`
-  );
-
-  if (stderr) {
-    console.error("Pylint error:", stderr);
-  }
-
-  return parsePylint(stdout);
-}
-
-function parsePylint(pylintOutput: string): number {
-  const match = pylintOutput.match(/Your code has been rated at (\d+\.\d+)/);
-  return match ? parseFloat(match[1]) : 0;
-}
-
 async function getPRDetails(): Promise<PRDetails> {
   const { repository, number } = JSON.parse(
     readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8")
@@ -358,74 +331,82 @@ async function createReviewComment(
   });
 }
 
-async function main() {
-  const prDetails = await getPRDetails();
-  let diff: string | null;
-  const eventData = JSON.parse(
-    readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8")
-  );
-
-  if (eventData.action === "opened") {
-    diff = await getDiff(
-      prDetails.owner,
-      prDetails.repo,
-      prDetails.pull_number
+async function main(): Promise<void> {
+  try {
+    const prDetails = await getPRDetails();
+    let diff: string | null;
+    const eventData = JSON.parse(
+      readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8")
     );
-  } else if (eventData.action === "synchronize") {
-    const newBaseSha = eventData.before;
-    const newHeadSha = eventData.after;
 
-    const response = await octokit.repos.compareCommits({
-      headers: {
-        accept: "application/vnd.github.v3.diff",
-      },
-      owner: prDetails.owner,
-      repo: prDetails.repo,
-      base: newBaseSha,
-      head: newHeadSha,
+    if (eventData.action === "opened") {
+      diff = await getDiff(
+        prDetails.owner,
+        prDetails.repo,
+        prDetails.pull_number
+      );
+    } else if (eventData.action === "synchronize") {
+      const newBaseSha = eventData.before;
+      const newHeadSha = eventData.after;
+
+      const response = await octokit.repos.compareCommits({
+        headers: {
+          accept: "application/vnd.github.v3.diff",
+        },
+        owner: prDetails.owner,
+        repo: prDetails.repo,
+        base: newBaseSha,
+        head: newHeadSha,
+      });
+
+      diff = String(response.data);
+    } else {
+      console.log("Unsupported event:", process.env.GITHUB_EVENT_NAME);
+      return;
+    }
+
+    if (!diff) {
+      console.log("No diff found");
+      return;
+    }
+
+    const parsedDiff = parseDiff(diff);
+
+    const excludePatterns = core
+      .getInput("exclude")
+      .split(",")
+      .map((s) => s.trim());
+
+    const filteredDiff = parsedDiff.filter((file) => {
+      return !excludePatterns.some((pattern) =>
+        minimatch(file.to ?? "", pattern)
+      );
     });
 
-    diff = String(response.data);
-  } else {
-    console.log("Unsupported event:", process.env.GITHUB_EVENT_NAME);
-    return;
-  }
+    const comments = await analyzeCode(filteredDiff, prDetails);
 
-  if (!diff) {
-    console.log("No diff found");
-    return;
-  }
-
-  const parsedDiff = parseDiff(diff);
-
-  const excludePatterns = core
-    .getInput("exclude")
-    .split(",")
-    .map((s) => s.trim());
-
-  const filteredDiff = parsedDiff.filter((file) => {
-    return !excludePatterns.some((pattern) =>
-      minimatch(file.to ?? "", pattern)
-    );
-  });
-
-  const comments = await analyzeCode(filteredDiff, prDetails);
-  const pylintScore = await getPylintScore();
-
-  await addPullRequestComment(
-    prDetails.owner,
-    prDetails.repo,
-    prDetails.pull_number,
-    `The pylint score for this pull request is: ${pylintScore.toFixed(2)}/10`
-  );
-
-  if (comments.length > 0) {
-    await createReviewComment(
-      prDetails.owner,
-      prDetails.repo,
-      prDetails.pull_number,
-      comments
-    );
+    if (comments.length > 0) {
+      await createReviewComment(
+        prDetails.owner,
+        prDetails.repo,
+        prDetails.pull_number,
+        comments
+      );
+    } else {
+      await addPullRequestComment(
+        prDetails.owner,
+        prDetails.repo,
+        prDetails.pull_number,
+        "No issues found in the code review."
+      );
+    }
+  } catch (error) {
+    console.error("Error:", error);
+    if (error instanceof Error) {
+      core.setFailed(error.message);
+    } else {
+      core.setFailed("An unknown error occurred");
+    }
   }
 }
 
