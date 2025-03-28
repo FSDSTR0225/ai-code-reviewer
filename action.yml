@@ -1,0 +1,23 @@
+name: "AI Code Review Action"
+description: "Perform code reviews and comment on diffs using Anthropic API."
+inputs:
+  GITHUB_TOKEN:
+    description: "GitHub token to interact with the repository."
+    required: true
+  ANTHROPIC_API_KEY:
+    description: "Anthropic API key for GPT."
+    required: true
+  CLAUDE_MODEL:
+    description: "Claude API model."
+    required: false
+    default: "claude-3-5-sonnet-20240620"
+  exclude:
+    description: "Glob patterns to exclude files from the diff analysis"
+    required: false
+    default: ""
+runs:
+  using: "node16"
+  main: "dist/index.js"
+branding:
+  icon: "aperture"
+  color: "green"
